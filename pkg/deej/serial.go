@@ -2,9 +2,12 @@ package deej
 
 import (
 	"bufio"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,6 +36,15 @@ type SerialIO struct {
 	currentSliderPercentValues []float32
 
 	sliderMoveConsumers []chan SliderMoveEvent
+}
+type SerialCommand struct {
+	Action string `json:"action"`
+	Text   string `json:"text"`
+	Line   int    `json:"line"`
+	Col    int    `json:"col"`
+	R      int    `json:"r"`
+	G      int    `json:"g"`
+	B      int    `json:"b"`
 }
 
 // SliderMoveEvent represents a single slider move captured by deej
@@ -108,6 +120,54 @@ func (sio *SerialIO) Start() error {
 
 	namedLogger.Infow("Connected", "conn", sio.conn)
 	sio.connected = true
+
+	cmd := exec.Command("playerctl", "metadata", "-p", "spotify", "--format", "{{artist}}_-_{{title}}", "--follow")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Println(err)
+	}
+	err = cmd.Start()
+	fmt.Println("command is running")
+	if err != nil {
+		fmt.Println(err)
+	}
+	scanner := bufio.NewScanner(stdout)
+	go func() {
+		current_artist := ""
+		current_title := ""
+		for scanner.Scan() {
+			m := scanner.Text()
+			data := strings.Split(m, "_-_")
+			if len(data) == 2 && (current_artist != data[0] || current_title != data[1]) {
+				current_artist = data[0]
+				current_title = data[1]
+				clear := SerialCommand{
+					Action: "clear",
+				}
+				writeArtist := SerialCommand{
+					Action: "write",
+					Text:   current_artist,
+					Col:    0,
+					Line:   0,
+				}
+				writeTitle := SerialCommand{
+					Action: "write",
+					Text:   current_title,
+					Col:    0,
+					Line:   1,
+				}
+				serialcom, _ := json.Marshal([]SerialCommand{
+					clear,
+					writeArtist,
+					writeTitle,
+				})
+				fmt.Print(string(serialcom))
+				writedata := base64.StdEncoding.EncodeToString([]byte(string(serialcom)))
+				sio.conn.Write([]byte(writedata))
+			}
+		}
+		cmd.Wait()
+	}()
 
 	// read lines or await a stop
 	go func() {
